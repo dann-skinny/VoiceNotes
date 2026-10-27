@@ -19,6 +19,13 @@ class InterpreteFechas {
     final ahora = DateTime.now();
     String texto = textoOriginal.trim();
 
+    // Se extrae la recurrencia antes de interpretar fechas u horas.
+    // Así "cada 8 horas" no se confunde con una hora del reloj.
+    final recurrencia = interpretarRecurrencia(texto);
+    if (recurrencia['esRecurrente'] == true) {
+      texto = recurrencia['textoSinRecurrencia'] as String;
+    }
+
     // Fecha de partida: hoy a medianoche. Cambia si la persona dice otra fecha.
     DateTime fechaBase = DateTime(
       ahora.year,
@@ -324,25 +331,107 @@ class InterpreteFechas {
       minutoFinal,
     );
 
-    // Si no dijo fecha y esa hora ya pasó hoy, el evento se pasa a mañana.
-    if (!fechaExplicita && fechaEvento.isBefore(ahora)) {
+    final esRecurrente = recurrencia['esRecurrente'] == true;
+    final inicioAutomatico = esRecurrente &&
+        !horaExplicita && horaSeleccionada == null && !fechaExplicita;
+
+    // Una repetición por intervalo sin hora indicada empieza a contar ahora.
+    // La primera notificación se calcula más abajo: no se avisa de inmediato.
+    if (inicioAutomatico) {
+      fechaEvento = ahora;
+    } else if (!fechaExplicita && fechaEvento.isBefore(ahora)) {
       fechaEvento = DateTime(
-        fechaBase.year,
-        fechaBase.month,
-        fechaBase.day + 1,
-        horaFinal,
-        minutoFinal,
+        fechaBase.year, fechaBase.month, fechaBase.day + 1,
+        horaFinal, minutoFinal,
       );
     }
 
-    // El aviso suena tantos días antes del evento como pidió (0 = el mismo día).
-    final fechaRecordatorio = DateTime(
-      fechaEvento.year,
-      fechaEvento.month,
-      fechaEvento.day - diasAnticipacion,
-      fechaEvento.hour,
-      fechaEvento.minute,
-    );
+    // Para una recurrencia semanal, se calcula la primera fecha del día indicado.
+    if (recurrencia['esRecurrente'] == true &&
+        recurrencia['tipoRecurrencia'] == 'dias_semana' &&
+        !fechaExplicita) {
+      final dias = recurrencia['diasSemanaRecurrencia'] as List<int>;
+      if (dias.isNotEmpty) {
+        DateTime? siguiente;
+        for (final dia in dias) {
+          var diferencia = (dia - ahora.weekday + 7) % 7;
+          var candidato = DateTime(ahora.year, ahora.month,
+              ahora.day + diferencia,
+              inicioAutomatico ? ahora.hour : horaFinal,
+              inicioAutomatico ? ahora.minute : minutoFinal);
+          if (!candidato.isAfter(ahora)) {
+            candidato = DateTime(ahora.year, ahora.month,
+                ahora.day + diferencia + 7,
+                inicioAutomatico ? ahora.hour : horaFinal,
+                inicioAutomatico ? ahora.minute : minutoFinal);
+          }
+          if (siguiente == null || candidato.isBefore(siguiente)) {
+            siguiente = candidato;
+          }
+        }
+        if (siguiente != null) fechaEvento = siguiente;
+      }
+    }
+
+    // "El día 5 de cada mes" conserva el día del mes indicado.
+    if (recurrencia['esRecurrente'] == true &&
+        recurrencia['diaMesRecurrencia'] != null && !fechaExplicita) {
+      final dia = recurrencia['diaMesRecurrencia'] as int;
+      var candidato = DateTime(ahora.year, ahora.month, dia,
+          horaFinal, minutoFinal);
+      if (!candidato.isAfter(ahora)) {
+        candidato = DateTime(ahora.year, ahora.month + 1, dia,
+            horaFinal, minutoFinal);
+      }
+      // Los días 29, 30 y 31 pueden no existir en todos los meses.
+      while (candidato.day != dia) {
+        candidato = DateTime(candidato.year, candidato.month + 1,
+            dia, horaFinal, minutoFinal);
+      }
+      fechaEvento = candidato;
+    }
+
+    // Para intervalos sin hora, el momento de creación es el inicio del ciclo.
+    // Ejemplo: a las 18:00, cada 8 horas => primer aviso a las 02:00.
+    DateTime fechaRecordatorio;
+    if (inicioAutomatico &&
+        recurrencia['tipoRecurrencia'] != 'dias_semana' &&
+        recurrencia['diaMesRecurrencia'] == null) {
+      final intervalo = recurrencia['intervaloRecurrencia'] as int? ?? 1;
+      switch (recurrencia['tipoRecurrencia']) {
+        case 'minutos':
+          fechaRecordatorio = ahora.add(Duration(minutes: intervalo));
+          break;
+        case 'horas':
+          fechaRecordatorio = ahora.add(Duration(hours: intervalo));
+          break;
+        case 'dias':
+          fechaRecordatorio = ahora.add(Duration(days: intervalo));
+          break;
+        case 'semanas':
+          fechaRecordatorio = ahora.add(Duration(days: 7 * intervalo));
+          break;
+        case 'meses':
+        case 'anios':
+          final meses = recurrencia['tipoRecurrencia'] == 'meses'
+              ? intervalo : 12 * intervalo;
+          final mesDestino = DateTime(ahora.year, ahora.month + meses, 1);
+          final ultimoDia = DateTime(mesDestino.year, mesDestino.month + 1, 0).day;
+          final dia = ahora.day <= ultimoDia ? ahora.day : ultimoDia;
+          fechaRecordatorio = DateTime(mesDestino.year, mesDestino.month,
+              dia, ahora.hour, ahora.minute, ahora.second);
+          break;
+        default:
+          fechaRecordatorio = fechaEvento;
+      }
+    } else {
+      fechaRecordatorio = DateTime(
+        fechaEvento.year, fechaEvento.month,
+        fechaEvento.day - diasAnticipacion,
+        fechaEvento.hour, fechaEvento.minute,
+        fechaEvento.second,
+      );
+    }
 
     texto = texto
       .replaceAll(
@@ -366,6 +455,19 @@ class InterpreteFechas {
       'fechaRecordatorio': fechaRecordatorio,
       'texto': texto,
       'diasAnticipacion': diasAnticipacion,
+      'esRecurrente': recurrencia['esRecurrente'],
+      'tipoRecurrencia': recurrencia['tipoRecurrencia'],
+      'intervaloRecurrencia': recurrencia['intervaloRecurrencia'],
+      'diasSemanaRecurrencia': recurrencia['diasSemanaRecurrencia'],
+      'diaMesRecurrencia': recurrencia['diaMesRecurrencia'],
+      'fechaFinRecurrencia': calcularFinRecurrencia(
+        recurrencia, inicioAutomatico ? ahora : fechaEvento),
+      'fechaProximaRepeticion': recurrencia['esRecurrente'] == true
+          ? fechaRecordatorio
+          : null,
+      'recurrenciaActiva': true,
+      // La hora de inicio es automática cuando no se especifica.
+      'requiereHoraInicio': false,
     };
 
   }
@@ -390,8 +492,9 @@ class InterpreteFechas {
       r'\b('
       r'cámbialo|cambialo|cámbiala|cambiala|'
       r'cambia|cambiar|'
-      r'modifica|modifícalo|modificalo|'
-      r'actualiza|corrige|'
+      r'modifica|modificar|modifícalo|modificalo|'
+      r'actualiza|actualizar|corrige|corregir|'
+      r'renombra|renombrar|renómbralo|renombralo|'
       r'muévelo|muevelo|muévela|muevela|'
       r'posponlo|pospónlo|posponla|'
       r'adelántalo|adelantalo|adelanta|'
@@ -435,91 +538,64 @@ class InterpreteFechas {
   /// hora (formato de 24 h), los minutos y si la persona dijo el momento del día, o null si no
   /// encontró una hora válida.
   static Map<String, int>? interpretarHoraModificacion(String texto) {
-    // Horas escritas con letras.
-    final numeros = <String, int>{
-      'una': 1,
-      'uno': 1,
-      'dos': 2,
-      'tres': 3,
-      'cuatro': 4,
-      'cinco': 5,
-      'seis': 6,
-      'siete': 7,
-      'ocho': 8,
-      'nueve': 9,
-      'diez': 10,
-      'once': 11,
-      'doce': 12,
+    const numeros = <String, int>{
+      'una': 1, 'uno': 1, 'dos': 2, 'tres': 3, 'cuatro': 4,
+      'cinco': 5, 'seis': 6, 'siete': 7, 'ocho': 8,
+      'nueve': 9, 'diez': 10, 'once': 11, 'doce': 12,
     };
 
-    // Mismo patrón que al dictar: "a las X", minutos y momento del día.
     final regex = RegExp(
-      r'\b(?:a\s+las?\s+|las\s+)'
+      r'\b(?:a\s+las?\s+|para\s+las?\s+|las\s+|'
+      r'a\s+la\s+|para\s+la\s+|a\s+las?\s+)?'
       r'(\d{1,2}|una|uno|dos|tres|cuatro|cinco|'
       r'seis|siete|ocho|nueve|diez|once|doce)'
-      r'(?::(\d{2})|\s+y\s+(media|cuarto))?'
-      r'\s*(am|pm|a\.m|p\.m|a\.m\.|p\.m\.|'
-      r'de la mañana|de la tarde|de la noche|'
-      r'del mediodía|de la madrugada)?',
+      r'(?::(\d{1,2})|\s+y\s+(media|cuarto))?'
+      r'\s*(de\s+la\s+mañana|de\s+la\s+tarde|'
+      r'de\s+la\s+noche|de\s+la\s+madrugada|'
+      r'del\s+mediodía|a\.?\s?m\.?|p\.?\s?m\.?|horas?)?\b',
       caseSensitive: false,
     );
-
-    final coincidencia = regex.firstMatch(texto);
-
+    // Evita confundir el día de una fecha ("28 de octubre") con una hora.
+    final sinFechas = texto.replaceAll(
+      RegExp(r'\b\d{1,2}\s+de\s+'
+          r'(?:enero|febrero|marzo|abril|mayo|junio|julio|'
+          r'agosto|septiembre|setiembre|octubre|noviembre|diciembre)'
+          r'(?:\s+(?:de|del)\s+\d{4})?\b', caseSensitive: false),
+      '',
+    );
+    final coincidencia = regex.firstMatch(sinFechas);
     if (coincidencia == null) return null;
 
-    final valorHora = coincidencia.group(1)!.toLowerCase();
-
-    int? hora = int.tryParse(valorHora) ?? numeros[valorHora];
-
+    final valor = coincidencia.group(1)!.toLowerCase();
+    int? hora = int.tryParse(valor) ?? numeros[valor];
     if (hora == null) return null;
-
     int minuto = int.tryParse(coincidencia.group(2) ?? '') ?? 0;
-
     final fraccion = coincidencia.group(3)?.toLowerCase();
+    if (fraccion == 'media') minuto = 30;
+    if (fraccion == 'cuarto') minuto = 15;
+    if (hora > 23 || minuto > 59) return null;
 
-    if (fraccion == 'media') {
-      minuto = 30;
-    } else if (fraccion == 'cuarto') {
-      minuto = 15;
-    }
-
-    final periodo = (coincidencia.group(4) ?? '').toLowerCase();
-
-    // Hora imposible: se descarta.
-    if (hora < 1 || hora > 23 || minuto > 59) {
-      return null;
-    }
-
-    // Se guarda si la persona dijo el momento del día; si no, el controlador le preguntará "¿de
-    // la mañana o de la noche?".
-    bool periodoExplicito = periodo.isNotEmpty;
-
-    // Tarde o noche suma 12 horas; mañana o madrugada convierte las 12 en 0; mediodía solo vale
-    // con las 12.
-    if (periodo.contains('pm') ||
-        periodo.contains('p.m') ||
-        periodo.contains('p.m.') ||
-        periodo.contains('tarde') ||
-        periodo.contains('noche')) {
-      if (hora > 12) return null;
+    final periodo = (coincidencia.group(4) ?? '')
+        .toLowerCase().replaceAll(RegExp(r'\s+|\.'), '');
+    final tarde = periodo.contains('pm') ||
+        periodo.contains('tarde') || periodo.contains('noche');
+    final manana = periodo.contains('am') ||
+        periodo.contains('mañana') || periodo.contains('madrugada');
+    final mediodia = periodo.contains('mediodía');
+    if (tarde) {
+      if (hora < 1 || hora > 12) return null;
       if (hora < 12) hora += 12;
-    } else if (periodo.contains('am') ||
-        periodo.contains('a.m') ||
-        periodo.contains('a.m.') ||
-        periodo.contains('mañana') ||
-        periodo.contains('madrugada')) {
-      if (hora > 12) return null;
+    } else if (manana) {
+      if (hora < 1 || hora > 12) return null;
       if (hora == 12) hora = 0;
-    } else if (periodo.contains('mediodía')) {
+    } else if (mediodia) {
       if (hora != 12) return null;
     }
-
-    // 'periodoExplicito' vale 1 si la persona dijo el momento del día y 0 si no.
+    final explicito = periodo.isNotEmpty || hora > 12;
     return {
       'hora': hora,
       'minuto': minuto,
-      'periodoExplicito': periodoExplicito ? 1 : 0,
+      'periodoExplicito': explicito ? 1 : 0,
     };
   }
 
@@ -533,7 +609,10 @@ class InterpreteFechas {
     String textoOriginal,
     DateTime fechaActual,
   ) {
-    final texto = textoOriginal.toLowerCase().trim();
+    final texto = textoOriginal.toLowerCase().trim().replaceAll(
+      RegExp(r'\bde\s+la\s+mañana\b', caseSensitive: false),
+      '',
+    );
     final hoy = DateTime.now();
 
     // Números escritos con letras.
@@ -711,5 +790,264 @@ class InterpreteFechas {
     }
 
     return null;
+  }
+
+  /// Obtiene un nombre nuevo cuando la orden pide renombrar un recordatorio.
+  /// No interpreta cambios de fecha u hora como cambios de nombre.
+  static String? interpretarNombreModificacion(String texto) {
+    final patrones = <RegExp>[
+      RegExp(
+        r'\b(?:cambia|cambiar|modifica|modificar|actualiza|actualizar)\s+'
+        r'(?:el\s+)?(?:nombre|texto|t[ií]tulo|descripci[oó]n)\s+'
+        r'(?:(?:del|de)\s+(?:mi\s+|este\s+|el\s+)?recordatorio\s+)?'
+        r'(?:a|por|como)\s+(.+)$',
+        caseSensitive: false,
+      ),
+      RegExp(
+        r'\b(?:renombra|renombrar|ren[oó]mbralo)\s+'
+        r'(?:(?:el|mi|este)\s+)?(?:recordatorio\s+)?'
+        r'(?:a|como|por)\s+(.+)$',
+        caseSensitive: false,
+      ),
+      RegExp(
+        r'\b(?:cambia|modifica|actualiza)\s+'
+        r'(?:(?:el|mi|este)\s+)?recordatorio\s+'
+        r'(?:para\s+que\s+(?:diga|se\s+llame)|con\s+el\s+nombre)\s+'
+        r'(.+)$',
+        caseSensitive: false,
+      ),
+    ];
+
+    for (final patron in patrones) {
+      final coincidencia = patron.firstMatch(texto.trim());
+      if (coincidencia == null) continue;
+      final nombre = coincidencia.group(1)?.trim();
+      if (nombre != null && nombre.isNotEmpty) return nombre;
+    }
+    return null;
+  }
+
+  /// Reconoce reglas de repetición sin programar notificaciones.
+  /// La duración es opcional: sin ella, fechaFinRecurrencia será null.
+  static Map<String, dynamic> interpretarRecurrencia(String original) {
+    var texto = original.trim();
+    String? unidad;
+    int intervalo = 1;
+    final dias = <int>[];
+    int? diaMes;
+    int? duracion;
+    String? unidadDuracion;
+    DateTime? fechaHasta;
+
+    const numeros = <String, int>{
+      'un': 1, 'uno': 1, 'una': 1, 'dos': 2, 'tres': 3,
+      'cuatro': 4, 'cinco': 5, 'seis': 6, 'siete': 7,
+      'ocho': 8, 'nueve': 9, 'diez': 10, 'once': 11,
+      'doce': 12, 'quince': 15, 'treinta': 30,
+      'primer': 1, 'primero': 1, 'segundo': 2, 'tercer': 3, 'tercero': 3,
+      'tercera': 3, '3er': 3, '3ero': 3,
+    };
+    int? cantidad(String? valor) => valor == null
+        ? null
+        : (int.tryParse(valor.toLowerCase()) ?? numeros[valor.toLowerCase()]);
+
+    const nombresDias = <String, int>{
+      'lunes': 1, 'martes': 2, 'miercoles': 3, 'miércoles': 3,
+      'jueves': 4, 'viernes': 5, 'sabado': 6, 'sábado': 6,
+      'domingo': 7,
+    };
+    const meses = <String, int>{
+      'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4,
+      'mayo': 5, 'junio': 6, 'julio': 7, 'agosto': 8,
+      'septiembre': 9, 'setiembre': 9, 'octubre': 10,
+      'noviembre': 11, 'diciembre': 12,
+    };
+
+    // "Durante 5 días", "por dos semanas", "durante un mes".
+    final duracionRegex = RegExp(
+      r'\b(?:durante|por)\s+(\d+|un|uno|una|dos|tres|cuatro|'
+      r'cinco|seis|siete|ocho|nueve|diez|doce|quince|treinta)\s+'
+      r'(minutos?|horas?|d[ií]as?|semanas?|mes(?:es)?|a[nñ]os?)\b',
+      caseSensitive: false,
+    );
+    final duracionMatch = duracionRegex.firstMatch(texto);
+    if (duracionMatch != null) {
+      duracion = cantidad(duracionMatch.group(1));
+      unidadDuracion = _unidadRecurrencia(duracionMatch.group(2)!);
+      texto = texto.replaceFirst(duracionRegex, ' ').trim();
+    }
+
+    // "Hasta el 30 de noviembre" o "hasta el 30 de noviembre de 2027".
+    final hastaRegex = RegExp(
+      r'\bhasta\s+(?:el\s+)?(\d{1,2})\s+de\s+'
+      r'(enero|febrero|marzo|abril|mayo|junio|julio|agosto|'
+      r'septiembre|setiembre|octubre|noviembre|diciembre)'
+      r'(?:\s+de\s+(\d{4}))?\b',
+      caseSensitive: false,
+    );
+    final hastaMatch = hastaRegex.firstMatch(texto);
+    if (hastaMatch != null) {
+      final dia = int.parse(hastaMatch.group(1)!);
+      final mes = meses[hastaMatch.group(2)!.toLowerCase()]!;
+      final ahora = DateTime.now();
+      var anio = int.tryParse(hastaMatch.group(3) ?? '') ?? ahora.year;
+      var candidata = DateTime(anio, mes, dia, 23, 59, 59);
+      if (candidata.day == dia && candidata.month == mes) {
+        if (hastaMatch.group(3) == null && candidata.isBefore(ahora)) {
+          anio++;
+          candidata = DateTime(anio, mes, dia, 23, 59, 59);
+        }
+        if (candidata.day == dia && candidata.month == mes) {
+          fechaHasta = candidata;
+          texto = texto.replaceFirst(hastaRegex, ' ').trim();
+        }
+      }
+    }
+
+    // "El día 5 de cada mes".
+    final mensualDia = RegExp(
+      r'\b(?:el\s+)?d[ií]a\s+(\d{1,2})\s+de\s+cada\s+mes\b',
+      caseSensitive: false,
+    );
+    final mensualMatch = mensualDia.firstMatch(texto);
+    if (mensualMatch != null) {
+      diaMes = int.parse(mensualMatch.group(1)!);
+      if (diaMes >= 1 && diaMes <= 31) {
+        unidad = 'meses';
+        texto = texto.replaceFirst(mensualDia, ' ').trim();
+      } else {
+        diaMes = null;
+      }
+    }
+
+    // "Todos los lunes", "cada lunes", "lunes y miércoles".
+    final diasRegex = RegExp(
+      r'\b(?:todos\s+los|cada)\s+'
+      r'(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)'
+      r'((?:\s*(?:,|y)\s*(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo))*)\b',
+      caseSensitive: false,
+    );
+    final diasMatch = diasRegex.firstMatch(texto);
+    if (diasMatch != null && unidad == null) {
+      final nombres = RegExp(
+        r'lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo',
+        caseSensitive: false,
+      ).allMatches(diasMatch.group(0)!);
+      for (final m in nombres) {
+        final dia = nombresDias[m.group(0)!.toLowerCase()];
+        if (dia != null && !dias.contains(dia)) dias.add(dia);
+      }
+      dias.sort();
+      unidad = 'dias_semana';
+      texto = texto.replaceFirst(diasRegex, ' ').trim();
+    }
+
+    // "Cada 8 horas", "cada dos días", "cada semana", "todos los días".
+    final intervaloRegex = RegExp(
+      r'\b(?:cada\s+(?:(\d+|un|uno|una|dos|tres|cuatro|cinco|'
+      r'seis|siete|ocho|nueve|diez|doce|quince|treinta|'
+      r'primer|primero|segundo|tercer|tercero|tercera|3er|3ero)\s+)?|'
+      r'todos?\s+los?\s+)'
+      r'(minutos?|horas?|d[ií]as?|semanas?|mes(?:es)?|a[nñ]os?)\b',
+      caseSensitive: false,
+    );
+    // Variantes naturales sin la palabra 'cada'.
+    // Se evalúan solo cuando no hay otra regla de repetición detectada.
+    final frecuenciaSimpleRegex = RegExp(
+      r'\b(diariamente|diario|diaria|mensualmente|mensual|semanalmente|semanal)\b',
+      caseSensitive: false,
+    );
+    final frecuenciaSimpleMatch = frecuenciaSimpleRegex.firstMatch(texto);
+    final intervaloMatch = intervaloRegex.firstMatch(texto);
+    if (intervaloMatch != null && unidad == null) {
+      unidad = _unidadRecurrencia(intervaloMatch.group(2)!);
+      intervalo = cantidad(intervaloMatch.group(1)) ?? 1;
+      texto = texto.replaceFirst(intervaloRegex, ' ').trim();
+    }
+
+    if (unidad == null && frecuenciaSimpleMatch != null) {
+      final frecuencia = frecuenciaSimpleMatch.group(1)!.toLowerCase();
+      if (frecuencia.startsWith('diari')) {
+        unidad = 'dias';
+      } else if (frecuencia.startsWith('mensual')) {
+        unidad = 'meses';
+      } else if (frecuencia.startsWith('semanal')) {
+        unidad = 'semanas';
+      }
+      if (unidad != null) {
+        intervalo = 1;
+        texto = texto.replaceFirst(frecuenciaSimpleRegex, ' ').trim();
+      }
+    }
+
+    final esRecurrente = unidad != null && intervalo > 0;
+    // No se elimina una duración aislada de una instrucción no recurrente.
+    if (!esRecurrente) texto = original.trim();
+    return {
+      'esRecurrente': esRecurrente,
+      'tipoRecurrencia': esRecurrente ? unidad : null,
+      'intervaloRecurrencia': intervalo,
+      'diasSemanaRecurrencia': dias,
+      'diaMesRecurrencia': diaMes,
+      'duracionRecurrencia': duracion,
+      'unidadDuracionRecurrencia': unidadDuracion,
+      'fechaHastaRecurrencia': fechaHasta,
+      'textoSinRecurrencia': texto.replaceAll(RegExp(r'\s+'), ' ').trim(),
+    };
+  }
+
+  static String _unidadRecurrencia(String palabra) {
+    final u = palabra.toLowerCase();
+    if (u.startsWith('minuto')) return 'minutos';
+    if (u.startsWith('hora')) return 'horas';
+    if (u.startsWith('d')) return 'dias';
+    if (u.startsWith('semana')) return 'semanas';
+    if (u.startsWith('mes')) return 'meses';
+    return 'anios';
+  }
+
+  /// Fecha de cierre inclusiva. null significa duración indefinida.
+  static DateTime? calcularFinRecurrencia(
+    Map<String, dynamic> recurrencia,
+    DateTime primeraFecha,
+  ) {
+    final hasta = recurrencia['fechaHastaRecurrencia'];
+    if (hasta is DateTime) return hasta;
+    final cantidad = recurrencia['duracionRecurrencia'];
+    final unidad = recurrencia['unidadDuracionRecurrencia'];
+    if (cantidad is! int || cantidad < 1 || unidad is! String) return null;
+    // Duración contada desde el primer evento, no desde el dictado.
+    DateTime finExclusivo;
+    switch (unidad) {
+      case 'minutos':
+        finExclusivo = primeraFecha.add(Duration(minutes: cantidad));
+        break;
+      case 'horas':
+        finExclusivo = primeraFecha.add(Duration(hours: cantidad));
+        break;
+      case 'dias':
+        finExclusivo = primeraFecha.add(Duration(days: cantidad));
+        break;
+      case 'semanas':
+        finExclusivo = primeraFecha.add(Duration(days: cantidad * 7));
+        break;
+      case 'meses':
+      case 'anios':
+        final meses = unidad == 'meses' ? cantidad : cantidad * 12;
+        final inicioMes = DateTime(
+          primeraFecha.year, primeraFecha.month + meses, 1,
+          primeraFecha.hour, primeraFecha.minute,
+        );
+        final ultimoDia = DateTime(
+          inicioMes.year, inicioMes.month + 1, 0,
+        ).day;
+        finExclusivo = DateTime(inicioMes.year, inicioMes.month,
+            primeraFecha.day <= ultimoDia ? primeraFecha.day : ultimoDia,
+            primeraFecha.hour, primeraFecha.minute);
+        break;
+      default:
+        return null;
+    }
+    return finExclusivo.subtract(const Duration(microseconds: 1));
   }
 }

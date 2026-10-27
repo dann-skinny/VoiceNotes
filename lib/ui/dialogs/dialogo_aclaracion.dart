@@ -1,26 +1,26 @@
+
 import 'package:flutter/material.dart';
 
 import '../themes/colores_perfil.dart';
 
-/// Diálogo con opciones para aclarar lo que quiso decir la persona (por ejemplo "¿aviso, evento
-/// o ambas?" o "¿mañana o noche?").
+/// Diálogo con opciones para aclarar lo que quiso decir la persona
+/// (por ejemplo, "¿aviso, evento o ambas?" o "¿mañana o noche?").
 ///
-/// [pregunta] es el texto de la pregunta y [opciones] son los botones que se muestran. Devuelve
-/// la opción elegida, o null si cancela. [colores] adapta los colores y tamaños al perfil
-/// activo.
+/// [pregunta] es el texto de la pregunta y [opciones] son los botones
+/// que se muestran. Devuelve la opción elegida, o null si cancela.
+/// [colores] adapta los colores y tamaños al perfil activo.
 Future<String?> mostrarDialogoAclaracion(
   BuildContext context, {
   required String pregunta,
   required List<String> opciones,
   required ColoresPerfil colores,
 }) {
-  // Tipo de pregunta, para elegir el título y el ícono: de horario (mañana/noche) o de fecha
-  // (aviso/evento).
-  final esHorario = opciones.contains('Mañana') &&
-      opciones.contains('Noche');
+  // Identifica el tipo de pregunta para mostrar el título y el ícono.
+  final esHorario =
+      opciones.contains('Mañana') && opciones.contains('Noche');
 
-  final esFecha = opciones.contains('Aviso') &&
-      opciones.contains('Evento');
+  final esFecha =
+      opciones.contains('Aviso') && opciones.contains('Evento');
 
   // Título del diálogo según el tipo de pregunta.
   final titulo = esHorario
@@ -39,6 +39,8 @@ Future<String?> mostrarDialogoAclaracion(
   // Ícono de cada opción.
   IconData iconoOpcion(String opcion) {
     switch (opcion) {
+      case 'Nombre':
+        return Icons.edit_rounded;
       case 'Aviso':
         return Icons.notifications_active_outlined;
       case 'Evento':
@@ -54,9 +56,11 @@ Future<String?> mostrarDialogoAclaracion(
     }
   }
 
-  // Texto pequeño que explica cada opción de fecha.
+  // Texto pequeño que explica cada opción.
   String descripcionOpcion(String opcion) {
     switch (opcion) {
+      case 'Nombre':
+        return 'Cambiar el nombre del recordatorio';
       case 'Aviso':
         return 'Cuándo recibirás la notificación';
       case 'Evento':
@@ -68,7 +72,26 @@ Future<String?> mostrarDialogoAclaracion(
     }
   }
 
-  // Muestra el diálogo. Al tocar una opción se cierra y la devuelve.
+  // Texto que se muestra en cada botón.
+  String tituloOpcion(String opcion) {
+    if (!esFecha) return opcion;
+
+    switch (opcion) {
+      case 'Nombre':
+        return 'Nombre del recordatorio';
+      case 'Evento':
+        return 'Fecha del evento';
+      case 'Aviso':
+        return 'Fecha del aviso';
+      case 'Ambas':
+        return 'Ambas fechas';
+      default:
+        return opcion;
+    }
+  }
+
+  // Muestra el diálogo.
+  // Al tocar una opción, se cierra y devuelve la opción seleccionada.
   return showDialog<String>(
     context: context,
     builder: (dialogContext) => AlertDialog(
@@ -80,13 +103,13 @@ Future<String?> mostrarDialogoAclaracion(
       contentPadding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
       actionsPadding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
 
-      // Contenido: encabezado, pregunta y lista de opciones (con scroll por si hay muchas).
+      // Encabezado, pregunta y lista de opciones.
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Encabezado: ícono, título y subtítulo.
+            // Encabezado.
             Row(
               children: [
                 Container(
@@ -132,7 +155,7 @@ Future<String?> mostrarDialogoAclaracion(
 
             const SizedBox(height: 22),
 
-            // La pregunta (con letra un poco más grande en modo asistido).
+            // Pregunta principal.
             Text(
               pregunta,
               style: TextStyle(
@@ -145,7 +168,7 @@ Future<String?> mostrarDialogoAclaracion(
 
             const SizedBox(height: 18),
 
-            // Un botón por cada opción: al tocarlo se cierra el diálogo y devuelve esa opción.
+            // Opciones disponibles.
             for (final opcion in opciones)
               Padding(
                 padding: const EdgeInsets.only(bottom: 10),
@@ -194,23 +217,20 @@ Future<String?> mostrarDialogoAclaracion(
                               crossAxisAlignment:
                                   CrossAxisAlignment.start,
                               children: [
-                                // Título de la opción. En preguntas de fecha dice "Fecha del
-                                // aviso", "Fecha del evento" o "Ambas fechas".
+                                // Nombre correcto de la opción.
                                 Text(
-                                  esFecha
-                                      ? opcion == 'Ambas'
-                                          ? 'Ambas fechas'
-                                          : 'Fecha del ${opcion.toLowerCase()}'
-                                      : opcion,
+                                  tituloOpcion(opcion),
                                   style: TextStyle(
-                                    fontSize: colores.esAdultoMayor ? 15 : 14,
+                                    fontSize:
+                                        colores.esAdultoMayor ? 15 : 14,
                                     fontWeight: FontWeight.w600,
                                     color: colores.texto,
                                   ),
                                 ),
 
-                                // Descripción pequeña (solo si la opción tiene).
-                                if (descripcionOpcion(opcion).isNotEmpty) ...[
+                                // Descripción, cuando corresponda.
+                                if (descripcionOpcion(opcion)
+                                    .isNotEmpty) ...[
                                   const SizedBox(height: 4),
                                   Text(
                                     descripcionOpcion(opcion),
@@ -239,7 +259,7 @@ Future<String?> mostrarDialogoAclaracion(
         ),
       ),
 
-      // Botón para cancelar sin elegir nada (el diálogo devuelve null).
+      // Cancelar sin seleccionar ninguna opción.
       actions: [
         SizedBox(
           width: double.infinity,

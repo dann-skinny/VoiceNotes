@@ -1,115 +1,182 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 
-/// Maneja las notificaciones de Android: las prepara al abrir la app, programa un aviso para
-/// una fecha y hora exactas y lo cancela cuando hace falta. Se usa sin crear objetos: todos sus
-/// métodos son estáticos.
+/// Programa y cancela notificaciones de Android para LifeFlow.
+///
+/// Las recurrencias se programan por lotes de fechas futuras. Android conserva
+/// ese lote aunque se cierre la aplicacion. El lote debe renovarse al abrir
+/// la app y antes de agotarse; este servicio no implementa un proceso de fondo.
 class NotificacionesService {
-  /// Constructor privado: evita que se creen objetos de esta clase.
   NotificacionesService._();
 
-  /// Plugin que se comunica con las notificaciones del sistema Android.
   static final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
-
-  /// Evita preparar las notificaciones más de una vez.
   static bool _inicializado = false;
 
-  /// Prepara las notificaciones: zona horaria, ícono y permisos. Se puede llamar varias veces;
-  /// solo se ejecuta la primera.
+  static const _canalId = 'lifeflow_recordatorios';
+  static const _canalNombre = 'Recordatorios LifeFlow';
+  static const _maximoPorSerie = 32;
+
+  static const _detalles = NotificationDetails(
+    android: AndroidNotificationDetails(
+      _canalId,
+      _canalNombre,
+      channelDescription: 'Avisos de actividades y recordatorios',
+      importance: Importance.max,
+      priority: Priority.high,
+    ),
+  );
+
   static Future<void> inicializar() async {
-    // Si ya se preparó antes, no se repite.
     if (_inicializado) return;
-
-    // Se cargan las zonas horarias para que los avisos suenen a la hora local correcta.
     tz.initializeTimeZones();
-
-    // Se detecta la zona horaria del celular y se usa como la zona de los avisos.
     final zona = await FlutterTimezone.getLocalTimezone();
     tz.setLocalLocation(tz.getLocation(zona.identifier));
 
-    // Ícono que aparece en la notificación (el mismo ícono de la app).
-    const android = AndroidInitializationSettings(
-      '@mipmap/ic_launcher',
-    );
-
     const configuracion = InitializationSettings(
-      android: android,
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
     );
-
-    // Se inicia el plugin con esa configuración.
     await _plugin.initialize(settings: configuracion);
 
-    // Funciones propias de Android, necesarias para pedir los permisos.
     final androidPlugin = _plugin.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>();
-
-    // Permiso para mostrar notificaciones.
     await androidPlugin?.requestNotificationsPermission();
-
-    // Permiso para alarmas exactas: así el aviso suena justo a la hora y no unos minutos
-    // después.
     await androidPlugin?.requestExactAlarmsPermission();
-
     _inicializado = true;
   }
 
-  /// Programa una notificación para [fecha]. [id] identifica el recordatorio; [titulo] y
-  /// [mensaje] son lo que se ve en la notificación. Si la fecha ya pasó, no hace nada.
+  /// Compatibilidad con los recordatorios normales existentes.
   static Future<void> programar({
     required int id,
     required String titulo,
     required String mensaje,
     required DateTime fecha,
   }) async {
-    // Por si todavía no se habían preparado las notificaciones.
     await inicializar();
-
-    // No se programan avisos en el pasado.
     if (!fecha.isAfter(DateTime.now())) return;
-
-    // Cómo se ve y suena la notificación en Android. El canal "Recordatorios LifeFlow" aparece
-    // con ese nombre en los ajustes del celular. Con importancia máxima sale como aviso
-    // emergente y con sonido.
-    const detallesAndroid = AndroidNotificationDetails(
-      'lifeflow_recordatorios',
-      'Recordatorios VoiceNotes',
-      channelDescription: 'Avisos de actividades y recordatorios',
-      importance: Importance.max,
-      priority: Priority.high,
-    );
-
-    const detalles = NotificationDetails(
-      android: detallesAndroid,
-    );
-
-    // Se deja el aviso programado en Android para esa fecha y hora. "exactAllowWhileIdle" hace
-    // que suene a tiempo aunque el celular esté en reposo.
-    await _plugin.zonedSchedule(
-      id: _idNotificacion(id),
-      title: titulo,
-      body: mensaje,
-      scheduledDate: tz.TZDateTime.from(fecha, tz.local),
-      notificationDetails: detalles,
-      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+    await _programarConId(
+      idNotificacion: _idNotificacion(id),
+      titulo: titulo,
+      mensaje: mensaje,
+      fecha: fecha,
+      payload: _payload(id),
     );
   }
 
-  /// Cancela la notificación programada de un recordatorio (por ejemplo, cuando se borra o se
-  /// cambia).
-  static Future<void> cancelar(int id) async {
-    // Por si todavía no se habían preparado las notificaciones.
+  /// Programa varias ocurrencias futuras del mismo recordatorio.
+  ///
+  /// [fechas] debe ser calculada por RecordatoriosService. Solo se guardan
+  /// hasta 32 ocurrencias futuras por llamada para no saturar Android.
+  /// Antes de reprogramar una serie, se cancelan sus avisos pendientes.
+  static Future<void> programarSerie({
+    required int id,
+    required String titulo,
+    required String mensaje,
+    required List<DateTime> fechas,
+  }) async {
     await inicializar();
-    await _plugin.cancel(
-      id: _idNotificacion(id),
-    );
+    await cancelar(id);
+
+    final ahora = DateTime.now();
+    final ordenadas = fechas.where((f) => f.isAfter(ahora)).toList()..sort();
+    final unicas = <DateTime>[];
+    for (final fecha in ordenadas) {
+      if (unicas.isEmpty || fecha != unicas.last) unicas.add(fecha);
+      if (unicas.length == _maximoPorSerie) break;
+    }
+
+    // Evita reutilizar IDs de notificaciones ajenas que ya esten pendientes.
+    final pendientes = await _plugin.pendingNotificationRequests();
+    final ocupados = pendientes.map((n) => n.id).toSet();
+    final propios = _payload(id);
+
+    final programados = <int>[];
+    try {
+      for (var i = 0; i < unicas.length; i++) {
+        var idAviso = _idSerie(id, i);
+        var intentos = 0;
+        while (ocupados.contains(idAviso) && intentos < 2147483646) {
+          idAviso = (idAviso + 1) % 2147483647;
+          intentos++;
+        }
+        if (ocupados.contains(idAviso)) {
+          throw StateError('No se encontro un identificador de notificacion libre');
+        }
+        await _programarConId(
+          idNotificacion: idAviso,
+          titulo: titulo,
+          mensaje: mensaje,
+          fecha: unicas[i],
+          payload: propios,
+        );
+        ocupados.add(idAviso);
+        programados.add(idAviso);
+      }
+    } catch (e) {
+      // Si falla una ocurrencia, no dejar una serie parcialmente programada.
+      for (final idAviso in programados) {
+        try {
+          await _plugin.cancel(id: idAviso);
+        } catch (cancelError) {
+          debugPrint('No se pudo revertir el aviso $idAviso: $cancelError');
+        }
+      }
+      debugPrint('No se pudo completar la serie $id: $e');
+      rethrow;
+    }
   }
 
-  /// Android solo acepta ids de hasta 32 bits. Los ids de LifeFlow pueden ser más grandes (se
-  /// basan en la hora actual), así que se reducen con el resto de una división.
-  static int _idNotificacion(int id) {
-    return id % 2147483647;
+  /// Cancela el aviso normal y todas las ocurrencias pendientes de la serie.
+  static Future<void> cancelar(int id) async {
+    await inicializar();
+    await _plugin.cancel(id: _idNotificacion(id));
+
+    final pendientes = await _plugin.pendingNotificationRequests();
+    final identificador = _payload(id);
+    for (final aviso in pendientes) {
+      if (aviso.payload == identificador) {
+        await _plugin.cancel(id: aviso.id);
+      }
+    }
+  }
+
+  static Future<void> _programarConId({
+    required int idNotificacion,
+    required String titulo,
+    required String mensaje,
+    required DateTime fecha,
+    required String payload,
+  }) async {
+    try {
+      await _plugin.zonedSchedule(
+        id: idNotificacion,
+        title: titulo,
+        body: mensaje,
+        scheduledDate: tz.TZDateTime.from(fecha, tz.local),
+        notificationDetails: _detalles,
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+        payload: payload,
+      );
+    } catch (error) {
+      debugPrint('No se pudo programar el aviso $idNotificacion: $error');
+      rethrow;
+    }
+  }
+
+  static String _payload(int id) => 'voicenotes_recordatorio:$id';
+
+  static int _idNotificacion(int id) => id % 2147483647;
+
+  /// Mezcla id de recordatorio y posicion para distribuir los IDs en 31 bits.
+  /// Las colisiones con avisos pendientes se resuelven en programarSerie.
+  static int _idSerie(int id, int posicion) {
+    var valor = (id ^ (posicion * 0x9e3779b9)) & 0x7fffffff;
+    valor ^= valor >> 16;
+    valor = (valor * 0x45d9f3b) & 0x7fffffff;
+    valor ^= valor >> 16;
+    return valor;
   }
 }

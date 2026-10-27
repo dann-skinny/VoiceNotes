@@ -1,14 +1,10 @@
+
 import 'package:flutter/material.dart';
 
-/// Panel "PERFIL ACTIVO" para cambiar de perfil: Estudiante o Asistido (Adulto Mayor).
+/// Selector de perfiles de VoiceNotes.
 class SelectorPerfil extends StatelessWidget {
-  /// Perfil que está activo ahora.
   final String perfilActivo;
-
-  /// Factor de tamaño de letras (más grande en modo asistido).
   final double escala;
-
-  /// Se llama con el perfil elegido ('Estudiante' o 'Adulto Mayor').
   final void Function(String perfil) alCambiar;
 
   const SelectorPerfil({
@@ -20,11 +16,13 @@ class SelectorPerfil extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final esAsistido = perfilActivo == 'Adulto Mayor';
+
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
       child: Container(
         width: double.infinity,
-        padding: const EdgeInsets.all(14),
+        padding: EdgeInsets.all(esAsistido ? 18 : 14),
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(20),
@@ -39,36 +37,42 @@ class SelectorPerfil extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Título del panel.
             Text(
               'PERFIL ACTIVO',
               style: TextStyle(
-                fontSize: 11 * escala,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 1,
-                color: Colors.grey.shade600,
+                fontSize: esAsistido ? 19 : 13,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.5,
+                color: Colors.black87,
               ),
             ),
-            const SizedBox(height: 12),
-            // Las dos opciones de perfil, una al lado de la otra.
+
+            const SizedBox(height: 14),
+
             Row(
               children: [
                 Expanded(
                   child: _OpcionPerfil(
-                      perfil: 'Estudiante',
-                      seleccionado: perfilActivo == 'Estudiante',
-                      escala: escala,
-                      onTap: () => alCambiar('Estudiante'),
-                    ),
+                    perfil: 'Estudiante',
+                    seleccionado: perfilActivo == 'Estudiante',
+                    esAsistido: esAsistido,
+                    icono: Icons.school_rounded,
+                    color: const Color(0xFF5269C7),
+                    onTap: () => alCambiar('Estudiante'),
+                  ),
                 ),
-                const SizedBox(width: 8),
+
+                const SizedBox(width: 10),
+
                 Expanded(
                   child: _OpcionPerfil(
-                      perfil: 'Adulto Mayor',
-                      seleccionado: perfilActivo == 'Adulto Mayor',
-                      escala: escala,
-                      onTap: () => alCambiar('Adulto Mayor'),
-                    ),
+                    perfil: 'Adulto Mayor',
+                    seleccionado: perfilActivo == 'Adulto Mayor',
+                    esAsistido: esAsistido,
+                    icono: Icons.accessibility_new_rounded,
+                    color: const Color(0xFF008577),
+                    onTap: () => alCambiar('Adulto Mayor'),
+                  ),
                 ),
               ],
             ),
@@ -79,49 +83,82 @@ class SelectorPerfil extends StatelessWidget {
   }
 }
 
-/// Una de las dos opciones del selector. La opción seleccionada se ve con fondo blanco y letra
-/// en negrita.
+/// Botón individual de selección de perfil.
 class _OpcionPerfil extends StatelessWidget {
-  /// Perfil que representa esta opción.
   final String perfil;
-
-  /// Si es el perfil activo.
   final bool seleccionado;
-
-  /// Factor de tamaño de letras.
-  final double escala;
-
-  /// Se llama al tocar la opción.
+  final bool esAsistido;
+  final IconData icono;
+  final Color color;
   final VoidCallback onTap;
 
   const _OpcionPerfil({
     required this.perfil,
     required this.seleccionado,
-    required this.escala,
+    required this.esAsistido,
+    required this.icono,
+    required this.color,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(
-          horizontal: 12,
-          vertical: 9,
-        ),
-        decoration: BoxDecoration(
-          color: seleccionado ? Colors.white : Colors.transparent,
-          borderRadius: BorderRadius.circular(16),
-        ),
-        // El perfil 'Adulto Mayor' se muestra con el nombre "Asistido".
-        child: Text(
-          perfil == 'Adulto Mayor' ? 'Asistido' : 'Estudiante',
-          style: TextStyle(
-            fontSize: 11 * escala,
-            fontWeight: seleccionado
-                ? FontWeight.bold
-                : FontWeight.normal,
+    final nombre = perfil == 'Adulto Mayor'
+        ? 'Asistido'
+        : 'Estudiante';
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(18),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          constraints: BoxConstraints(
+            minHeight: esAsistido ? 105 : 84,
+          ),
+          padding: EdgeInsets.symmetric(
+            horizontal: esAsistido ? 6 : 8,
+            vertical: esAsistido ? 14 : 12,
+          ),
+          decoration: BoxDecoration(
+            color: seleccionado
+                ? color.withValues(alpha: 0.12)
+                : const Color(0xFFF5F6F8),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: seleccionado ? color : Colors.transparent,
+              width: 2,
+            ),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icono,
+                size: esAsistido ? 38 : 30,
+                color: color,
+              ),
+
+              const SizedBox(height: 8),
+
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  nombre,
+                  maxLines: 1,
+                  style: TextStyle(
+                    fontSize: esAsistido ? 21 : 15,
+                    fontWeight: seleccionado
+                        ? FontWeight.w800
+                        : FontWeight.w600,
+                    color: seleccionado
+                        ? color
+                        : Colors.black87,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),

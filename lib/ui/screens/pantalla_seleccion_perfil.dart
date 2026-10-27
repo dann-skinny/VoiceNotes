@@ -31,19 +31,16 @@ class PantallaSeleccionPerfil extends StatelessWidget {
                   children: [
                     // Logo de la app.
                     Center(
-                      child: Container(
-                        padding: const EdgeInsets.all(18),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF7659E8),
-                          borderRadius: BorderRadius.circular(22),
-                        ),
-                        child: const Icon(
-                          Icons.auto_awesome_rounded,
-                          color: Colors.white,
-                          size: 34,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(22),
+                        child: Image.asset(
+                          'assets/icon/icono.png',
+                          width: 90,
+                          height: 90,
+                          fit: BoxFit.cover,
+                          ),
                         ),
                       ),
-                    ),
 
                     const SizedBox(height: 18),
 

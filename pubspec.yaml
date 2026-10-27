@@ -37,10 +37,9 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/icon/icono.png
 
-  # Configuración opcional de assets / fuentes
-  # assets:
-  #   - assets/
 
 flutter_launcher_icons:
   android: true

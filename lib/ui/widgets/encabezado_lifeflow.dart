@@ -1,13 +1,11 @@
+
 import 'package:flutter/material.dart';
 
 import '../themes/colores_perfil.dart';
 
-/// Encabezado de la pantalla principal: botón para regresar, logo y nombre de la app.
+/// Encabezado principal de VoiceNotes.
 class EncabezadoLifeFlow extends StatelessWidget {
-  /// Factor de tamaño de letras e íconos (más grande en modo asistido).
   final double escala;
-
-  /// Colores del perfil activo.
   final ColoresPerfil colores;
 
   const EncabezadoLifeFlow({
@@ -18,15 +16,22 @@ class EncabezadoLifeFlow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final esAsistido = colores.esAdultoMayor;
+
+    // Tamaños especiales para mejorar la accesibilidad.
+    final tamanoTitulo = esAsistido ? 32.0 : 22.0;
+    final tamanoSubtitulo = esAsistido ? 18.0 : 12.0;
+    final tamanoIcono = esAsistido ? 34.0 : 26.0;
+
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 20),
       child: Row(
         children: [
-          // Botón para regresar a la pantalla de perfiles.
+          // Botón para regresar.
           Container(
             decoration: BoxDecoration(
               color: Colors.white,
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(16),
             ),
             child: IconButton(
               tooltip: 'Regresar',
@@ -34,43 +39,56 @@ class EncabezadoLifeFlow extends StatelessWidget {
               icon: Icon(
                 Icons.arrow_back_ios_new_rounded,
                 color: colores.texto,
-                size: 20,
+                size: esAsistido ? 28 : 22,
               ),
             ),
           ),
-          const SizedBox(width: 12),
-          // Logo de la app.
+
+          const SizedBox(width: 10),
+
+          // Nuevo ícono de VoiceNotes.
           Container(
-            padding: const EdgeInsets.all(10),
+            padding: EdgeInsets.all(esAsistido ? 13 : 10),
             decoration: BoxDecoration(
               color: colores.principal,
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(18),
             ),
-            child: const Icon(
-              Icons.auto_awesome_rounded,
+            child: Icon(
+              Icons.record_voice_over_rounded,
               color: Colors.white,
-              size: 24,
+              size: tamanoIcono,
             ),
           ),
+
           const SizedBox(width: 12),
-          // Nombre de la app y su descripción.
+
+          // Nombre y descripción.
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   'VoiceNotes',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 22 * escala,
+                    fontSize: tamanoTitulo,
                     fontWeight: FontWeight.w800,
                     color: colores.texto,
                   ),
                 ),
+
+                const SizedBox(height: 4),
+
                 Text(
-                  'Tu asistente personal',
+                  esAsistido
+                      ? 'Asistente de voz'
+                      : 'Tu asistente personal',
+                  maxLines: 2,
                   style: TextStyle(
-                    fontSize: 11 * escala,
-                    color: Colors.grey.shade600,
+                    fontSize: tamanoSubtitulo,
+                    fontWeight: FontWeight.w600,
+                    color: colores.texto,
                   ),
                 ),
               ],

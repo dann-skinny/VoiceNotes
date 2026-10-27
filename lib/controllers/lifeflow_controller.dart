@@ -5,6 +5,7 @@ import 'package:flutter/services.dart'
 import '../models/elemento_flow.dart';
 import '../services/almacenamiento_service.dart';
 import '../services/interprete_fechas.dart';
+import '../services/notificaciones_service.dart';
 import '../services/recordatorios_service.dart';
 import '../services/telefono_service.dart';
 import '../services/voz_service.dart';
@@ -73,6 +74,12 @@ class LifeFlowController extends ChangeNotifier {
   /// modificación.
   int? _ultimoRecordatorioId;
 
+  /// Elemento seleccionado desde el botón Editar (null: dictado normal).
+  int? _edicionSeleccionadaId;
+
+  /// Destino elegido en el diálogo de edición.
+  String? _destinoEdicion;
+
   // Lectura del estado para la pantalla.
   List<ElementoFlow> get elementos => _elementos;
   String get textoDictado => _textoDictado;
@@ -80,6 +87,22 @@ class LifeFlowController extends ChangeNotifier {
   bool get estaEscuchando => _estaEscuchando;
   bool get finalizando => _finalizando;
   bool get cargando => _cargando;
+  bool get editandoPorVoz => _edicionSeleccionadaId != null;
+  String? get destinoEdicion => _destinoEdicion;
+
+  /// Cancela el modo de edición sin modificar el elemento.
+  void cancelarEdicionPorVoz() {
+    _actualizar(() {
+      _edicionSeleccionadaId = null;
+      _destinoEdicion = null;
+      _textoDictado = '';
+      horaSeleccionada = null;
+    });
+    if (_estaEscuchando) {
+      _estaEscuchando = false;
+      _voz.detenerEscucha();
+    }
+  }
 
   // Estos tres valores los cambia la pantalla directamente (ella ya se redibuja después).
   // String get perfilActivo => _perfilActivo;
@@ -199,6 +222,11 @@ class LifeFlowController extends ChangeNotifier {
       for (final item in cargados) {
         if (item.tipo == 'Recordatorio') {
           _programarTimerInterno(item);
+          try {
+            await _programarNotificacionesInterno(item);
+          } catch (e) {
+            debugPrint('Error restaurando notificaciones: $e');
+          }
         }
       }
     } catch (e) {
@@ -229,6 +257,29 @@ class LifeFlowController extends ChangeNotifier {
     }
   }
 
+  /// Programa un aviso normal o un lote de ocurrencias recurrentes en Android.
+  Future<void> _programarNotificacionesInterno(ElementoFlow item) async {
+    if (item.tipo != 'Recordatorio') return;
+    if (!item.esRecurrente) {
+      await _recordatorios.actualizarNotificacion(item);
+      return;
+    }
+    final fechas = <DateTime>[];
+    var desde = DateTime.now();
+    for (var i = 0; i < 32; i++) {
+      final siguiente = _recordatorios.proximoAviso(item, desde: desde);
+      if (siguiente == null || !siguiente.isAfter(desde)) break;
+      fechas.add(siguiente);
+      desde = siguiente;
+    }
+    await NotificacionesService.programarSerie(
+      id: item.id,
+      titulo: 'Recordatorio VoiceNotes',
+      mensaje: item.texto,
+      fechas: fechas,
+    );
+  }
+
   /// Programa el temporizador de un recordatorio; cuando llegue la hora se lanza la alerta.
   void _programarTimerInterno(ElementoFlow item) {
     _recordatorios.programarTemporizador(item, _dispararAlerta);
@@ -239,117 +290,124 @@ class LifeFlowController extends ChangeNotifier {
     if (mounted) alLanzarAlerta?.call(item);
   }
 
-  /// Prende el micrófono y empieza a escuchar lo que dice la persona.
+  /// Inicia un dictado. El servicio de voz gestiona los reinicios de sesión.
   Future<void> _iniciarDictado() async {
-    // No se puede dictar mientras se cargan los datos o se está terminando otro dictado.
-    if (_finalizando || _cargando) return;
+    if (_finalizando || _cargando || _estaEscuchando) return;
 
     try {
-      // Se prepara el micrófono y se le indica qué hacer cuando deja de escuchar o si hay un
-      // error.
       final disponible = await _voz.inicializarEscucha(
         alCambiarEstado: (estado) {
           debugPrint('Micrófono: $estado');
-
-          // Si el micrófono se detiene solo (la persona dejó de hablar), se termina el dictado.
-          if ((estado == 'done' || estado == 'notListening') &&
-              _estaEscuchando &&
-              !_finalizando) {
-            _finalizarDictado();
-          }
+          // No guardar en done/notListening: pueden ser pausas entre sesiones.
         },
         alOcurrirError: (error) {
           debugPrint('Reconocimiento: $error');
-
-          // Si falla el reconocimiento, también se termina el dictado.
-          if (_estaEscuchando && !_finalizando) {
-            _finalizarDictado();
+          if (mounted) {
+            _mostrarMensaje('Problema con el reconocimiento de voz: $error');
           }
+          // No finalizar aquí: VozService decide si puede recuperarse.
         },
       );
 
       if (!mounted) return;
-
-      // El micrófono no está disponible (por ejemplo, falta el permiso).
       if (!disponible) {
         _mostrarMensaje('No se pudo activar el micrófono.');
         return;
       }
 
-      // Se borra el texto anterior y se marca que está escuchando.
       _actualizar(() {
         _textoDictado = '';
         _estaEscuchando = true;
       });
 
-      // Cada vez que se reconocen palabras nuevas, se actualiza el texto que ve la persona.
       await _voz.escuchar(
         alRecibirTexto: (palabras) {
-          if (!mounted) return;
-
-          _actualizar(() {
-            _textoDictado = palabras;
-          });
+          if (!mounted || !_estaEscuchando || _finalizando) return;
+          _actualizar(() => _textoDictado = palabras);
         },
       );
     } catch (e) {
       debugPrint('Error al iniciar micrófono: $e');
-
       if (!mounted) return;
-
-      _actualizar(() {
-        _estaEscuchando = false;
-      });
-
+      _actualizar(() => _estaEscuchando = false);
       _mostrarMensaje('No se pudo iniciar el dictado.');
     }
   }
 
-  /// Apaga el micrófono y, si se reconoció texto, lo guarda como nota o recordatorio.
+  /// Detiene la escucha y guarda una sola vez el texto acumulado.
   Future<void> _finalizarDictado() async {
-    // Si ya se está finalizando, no se repite.
-    if (_finalizando) return;
+    if (_finalizando || !_estaEscuchando) return;
 
     _finalizando = true;
-
     try {
       await _voz.detenerEscucha();
-
-      // Pequeña espera para que el reconocimiento alcance a entregar las últimas palabras.
-      await Future.delayed(const Duration(milliseconds: 500));
-
+      await Future<void>.delayed(const Duration(milliseconds: 500));
       if (!mounted) return;
 
-      _actualizar(() {
-        _estaEscuchando = false;
-      });
-
-      // Si hay texto se guarda; si no, se avisa que no se escuchó nada.
+      _actualizar(() => _estaEscuchando = false);
       if (_textoDictado.trim().isNotEmpty) {
         await _guardarRegistro();
       } else {
-        _mostrarMensaje('No se reconoció texto. Inténtalo nuevamente.');
+        _mostrarMensaje(_edicionSeleccionadaId != null
+            ? 'No escuché el cambio. Pulsa el micrófono para intentarlo de nuevo.'
+            : 'No se reconoció texto. Inténtalo nuevamente.');
       }
     } catch (e) {
       debugPrint('Error al finalizar dictado: $e');
-      _mostrarMensaje('No se pudo finalizar el dictado.');
-
-    // Pase lo que pase, al final se permite volver a dictar.
+      if (mounted) _mostrarMensaje('No se pudo finalizar el dictado.');
     } finally {
       _finalizando = false;
+      if (mounted) notifyListeners();
     }
   }
 
-  /// Acción del botón del micrófono: si está escuchando lo detiene (y guarda lo dictado); si
-  /// no, empieza a escuchar.
+  /// El primer toque inicia el dictado; el segundo lo detiene y guarda.
   Future<void> toggleEscuchaVoz() async {
     if (_finalizando || _cargando) return;
-
     if (_estaEscuchando) {
       await _finalizarDictado();
     } else {
       await _iniciarDictado();
     }
+  }
+
+  /// Activa el modo de edición de una tarjeta y pide la instrucción por voz.
+  Future<void> iniciarEdicionPorVoz(ElementoFlow item, {String? destino}) async {
+    if (!mounted || _cargando || _finalizando || _estaEscuchando) {
+      _mostrarMensaje('Termina el dictado actual antes de editar.');
+      return;
+    }
+    if (!_elementos.any((e) => e.id == item.id && e.perfil == perfilActivo)) {
+      _mostrarMensaje('No se encontró el elemento seleccionado.');
+      return;
+    }
+    _actualizar(() {
+      _edicionSeleccionadaId = item.id;
+      _destinoEdicion = item.tipo == 'Recordatorio' ? destino : 'Nota';
+      _textoDictado = '';
+      horaSeleccionada = null;
+      if (item.tipo == 'Recordatorio') {
+        _ultimoRecordatorioId = item.id;
+      }
+    });
+    await _voz.hablar(item.tipo == 'Recordatorio'
+        ? 'Dicta el cambio para ${destino ?? 'el recordatorio'} de ${item.texto}.'
+        : '¿Cómo quieres que quede la nota? Dicta su nuevo contenido.');
+    if (mounted && _edicionSeleccionadaId == item.id) {
+      _mostrarMensaje('Pulsa el micrófono para dictar el cambio.');
+    }
+  }
+
+  /// Evita que una orden de edición se convierta en una nota por una variación
+  /// del reconocimiento de voz (por ejemplo, 'cámbiale el nombre').
+  bool _pareceOrdenDeEdicion(String texto) {
+    return RegExp(
+      r'^(?:por favor\s+)?(?:c[aá]mbiale|c[aá]mbialo|cambia|cambiar|'
+      r'modifica|modificar|edita|editar|renombra|renombrar|'
+      r'ponle|corrige|actualiza|mueve|mu[eé]velo|posp[oó]n|'
+      r'adelanta|retrasa)\b',
+      caseSensitive: false,
+    ).hasMatch(texto.trim());
   }
 
   /// Detecta si lo dictado es una orden para cambiar el último recordatorio en lugar de crear
@@ -371,6 +429,38 @@ class LifeFlowController extends ChangeNotifier {
       _mostrarMensaje(
         'No hay un recordatorio reciente para modificar.',
       );
+      return;
+    }
+
+    // Renombrar no cambia la fecha ni la hora del recordatorio.
+    final nuevoNombre = _destinoEdicion == 'Nombre'
+        ? (InterpreteFechas.interpretarNombreModificacion(instruccion) ??
+            instruccion.trim())
+        : InterpreteFechas.interpretarNombreModificacion(instruccion);
+    if (nuevoNombre != null && (_destinoEdicion == null || _destinoEdicion == 'Nombre')) {
+      final indice = _elementos.indexWhere(
+        (elemento) => elemento.id == anterior.id,
+      );
+      if (indice == -1 || !mounted) {
+        _mostrarMensaje('No se encontró el recordatorio.');
+        return;
+      }
+
+      final actualizado = anterior.copyWith(texto: nuevoNombre);
+      _actualizar(() {
+        _elementos[indice] = actualizado;
+        _ultimoRecordatorioId = actualizado.id;
+        _textoDictado = '';
+        horaSeleccionada = null;
+      });
+
+      await _guardarDatos();
+      // Reprograma la notificación para que muestre el texto actualizado.
+      await _programarNotificacionesInterno(actualizado);
+      if (!mounted) return;
+
+      _mostrarMensaje('Nombre del recordatorio actualizado.');
+      await _voz.hablar('El nombre del recordatorio se actualizó correctamente.');
       return;
     }
 
@@ -451,20 +541,20 @@ class LifeFlowController extends ChangeNotifier {
     } else {
       // CASO 2: pidió cambiar una fecha u hora. Primero se averigua qué fecha quiere mover: el
       // aviso, el evento o ambas.
-      String? destino;
+      String? destino = _destinoEdicion;
 
       // Si lo dijo con palabras claras se usa eso; si no, se le pregunta.
-      if (texto.contains('aviso') ||
+      if (destino == null && (texto.contains('aviso') ||
           texto.contains('notificación') ||
           texto.contains('notificacion') ||
           texto.contains('avísame') ||
-          texto.contains('avisame')) {
+          texto.contains('avisame'))) {
         destino = 'Aviso';
-      } else if (texto.contains('evento') ||
+      } else if (destino == null && (texto.contains('evento') ||
           texto.contains('entrega') ||
-          texto.contains('actividad')) {
+          texto.contains('actividad'))) {
         destino = 'Evento';
-      } else {
+      } else if (destino == null) {
         destino = await _solicitarAclaracion(
           pregunta:
               '¿Quieres modificar la fecha del aviso o del evento o ambas?',
@@ -488,8 +578,15 @@ class LifeFlowController extends ChangeNotifier {
       }
 
       // Nueva fecha que dijo la persona (es null si solo dijo una hora).
-      final fechaInterpretada =
-          InterpreteFechas.interpretarFechaModificacion(instruccion, fechaBase);
+      // Evita interpretar "de la mañana" (periodo horario) como "mañana" (día).
+      final textoParaFecha = instruccion.replaceAll(
+        RegExp(r'\b(?:de\s+la\s+mañana|por\s+la\s+mañana)\b',
+            caseSensitive: false),
+        '',
+      );
+      final fechaInterpretada = InterpreteFechas.interpretarFechaModificacion(
+        textoParaFecha, fechaBase,
+      );
 
       // No dijo ninguna fecha ni hora que se pueda entender.
       if (fechaInterpretada == null && horaInterpretada == null) {
@@ -548,15 +645,39 @@ class LifeFlowController extends ChangeNotifier {
           return;
         }
 
-        final diferencia = fechaActualizada.difference(
-          nuevaFechaEvento,
-        );
+        // Cambiar solo la hora conserva ambos días; cambiar solo
+        // la fecha conserva ambas horas. La separación se mantiene.
+        if (fechaInterpretada != null) {
+          final dias = DateTime(
+            fechaActualizada.year, fechaActualizada.month,
+            fechaActualizada.day,
+          ).difference(DateTime(
+            nuevaFechaEvento.year, nuevaFechaEvento.month,
+            nuevaFechaEvento.day,
+          )).inDays;
+          nuevaFechaEvento = DateTime(
+            nuevaFechaEvento.year, nuevaFechaEvento.month,
+            nuevaFechaEvento.day + dias,
+            nuevaFechaEvento.hour, nuevaFechaEvento.minute,
+          );
+          nuevaFechaAviso = DateTime(
+            nuevaFechaAviso.year, nuevaFechaAviso.month,
+            nuevaFechaAviso.day + dias,
+            nuevaFechaAviso.hour, nuevaFechaAviso.minute,
+          );
+        }
+        if (horaInterpretada != null) {
+          // La hora dictada se asigna a ambos; no se suma un desplazamiento.
+          nuevaFechaEvento = DateTime(
+            nuevaFechaEvento.year, nuevaFechaEvento.month,
+            nuevaFechaEvento.day, fechaActualizada.hour, fechaActualizada.minute,
+          );
+          nuevaFechaAviso = DateTime(
+            nuevaFechaAviso.year, nuevaFechaAviso.month,
+            nuevaFechaAviso.day, fechaActualizada.hour, fechaActualizada.minute,
+          );
+        }
 
-        nuevaFechaEvento = fechaActualizada;
-
-        nuevaFechaAviso = nuevaFechaAviso.add(
-          diferencia,
-        );
 
       // Solo el evento: si el aviso era "X días antes", se recalcula para conservar esa
       // anticipación.
@@ -589,6 +710,11 @@ class LifeFlowController extends ChangeNotifier {
       }
     }
 
+    if (nuevaFechaEvento != null && nuevaFechaAviso.isAfter(nuevaFechaEvento)) {
+      _mostrarMensaje('El aviso no puede quedar después del evento.');
+      return;
+    }
+
     // No se permite dejar el aviso en el pasado.
     if (!nuevaFechaAviso.isAfter(DateTime.now())) {
       _mostrarMensaje(
@@ -604,6 +730,7 @@ class LifeFlowController extends ChangeNotifier {
       fechaRecordatorio: nuevaFechaAviso,
       diasAnticipacion: diasAnticipacion,
       avisoRelativo: avisoRelativo,
+      fechaProximaRepeticion: anterior.esRecurrente ? nuevaFechaAviso : null,
     );
 
     // Se busca su posición en la lista para reemplazarlo.
@@ -629,7 +756,7 @@ class LifeFlowController extends ChangeNotifier {
     _recordatorios.cancelarTemporizador(actualizado.id);
 
     await _guardarDatos();
-    await _recordatorios.actualizarNotificacion(actualizado);
+    await _programarNotificacionesInterno(actualizado);
 
     if (!mounted) return;
 
@@ -650,9 +777,57 @@ class LifeFlowController extends ChangeNotifier {
     final dictado = _textoDictado.trim();
     if (dictado.isEmpty) return;
 
-    // Si es una orden de cambio, se modifica el último recordatorio y no se crea nada nuevo.
-    if (_esInstruccionModificacion(dictado)) {
-      await _modificarRecordatorio(dictado);
+    // Si se pulsó Editar, el dictado modifica exclusivamente esa tarjeta.
+    if (_edicionSeleccionadaId != null) {
+      final id = _edicionSeleccionadaId!;
+      final indice = _elementos.indexWhere(
+        (e) => e.id == id && e.perfil == perfilActivo,
+      );
+      if (indice < 0) {
+        _edicionSeleccionadaId = null;
+        _mostrarMensaje('Ya no existe el elemento seleccionado.');
+        return;
+      }
+      final seleccionado = _elementos[indice];
+      if (seleccionado.tipo == 'Recordatorio') {
+        _ultimoRecordatorioId = id;
+        await _modificarRecordatorio(dictado);
+      } else {
+        final textoNuevo = dictado.replaceFirst(
+          RegExp(r'^(?:cambia|c[aá]mbiale|modifica|edita|pon|ponle|escribe)\s+'
+              r'(?:(?:el|la)\s+)?(?:texto|contenido|nota)\s+'
+              r'(?:a|por|como)\s+', caseSensitive: false),
+          '',
+        ).trim();
+        if (textoNuevo.isNotEmpty) {
+          await editarElemento(seleccionado, texto: textoNuevo);
+          if (mounted) await _voz.hablar('Nota actualizada.');
+        }
+      }
+      if (mounted) {
+        final exito = seleccionado.tipo != 'Recordatorio' ||
+            _textoDictado.trim().isEmpty;
+        _actualizar(() {
+          if (exito) {
+            _edicionSeleccionadaId = null;
+            _destinoEdicion = null;
+          }
+          _textoDictado = '';
+          horaSeleccionada = null;
+        });
+      }
+      return;
+    }
+
+    // Una instrucción de edición jamás debe guardarse como nota nueva.
+    // También funciona cuando la persona dicta la orden sin pulsar Editar.
+    if (_esInstruccionModificacion(dictado) ||
+        _pareceOrdenDeEdicion(dictado)) {
+      if (_obtenerUltimoRecordatorio() == null) {
+        _mostrarMensaje('No hay un recordatorio seleccionado para modificar.');
+      } else {
+        await _modificarRecordatorio(dictado);
+      }
 
       if (mounted) {
         _actualizar(() {
@@ -670,9 +845,26 @@ class LifeFlowController extends ChangeNotifier {
     int? diasAnticipacion;
     bool avisoRelativo = false;
     String textoFinal = dictado;
+    bool esRecurrente = false;
+    String? tipoRecurrencia;
+    int intervaloRecurrencia = 1;
+    DateTime? fechaFinRecurrencia;
+    DateTime? fechaProximaRepeticion;
+    List<int> diasSemanaRecurrencia = const [];
+
 
     // En un recordatorio se interpretan las fechas y horas que dijo la persona.
     if (tipoActual == 'Recordatorio') {
+      final recurrencia = InterpreteFechas.interpretarRecurrencia(dictado);
+      esRecurrente = recurrencia['esRecurrente'] == true;
+      // El intérprete necesita el dictado completo para reconocer tanto
+      // la recurrencia como la fecha de su primera ocurrencia.
+      // No eliminar "cada 8 horas" ni "todos los lunes" antes de llamarlo.
+      // El modelo aún no almacena un día fijo del mes.
+      if (esRecurrente && recurrencia['diaMesRecurrencia'] != null) {
+        _mostrarMensaje('La repetición por día del mes aún no está disponible.');
+        return;
+      }
       final resultado = InterpreteFechas.procesarDictadoRecordatorio(
         dictado,
         horaSeleccionada: horaSeleccionada,
@@ -693,6 +885,34 @@ class LifeFlowController extends ChangeNotifier {
       fechaRecordatorio = resultado['fechaRecordatorio'] as DateTime;
       fechaEvento = resultado['fechaEvento'] as DateTime;
       textoFinal = resultado['texto'] as String;
+      if (esRecurrente) {
+        tipoRecurrencia = recurrencia['tipoRecurrencia'] as String?;
+        intervaloRecurrencia = recurrencia['intervaloRecurrencia'] as int? ?? 1;
+        diasSemanaRecurrencia = List<int>.from(
+          recurrencia['diasSemanaRecurrencia'] as List? ?? const [],
+        );
+        // El intérprete calcula el primer aviso y la fecha de finalización.
+        // Sin hora explícita, el ciclo comienza al dictar la instrucción.
+        fechaFinRecurrencia = resultado['fechaFinRecurrencia'] as DateTime?;
+        if (fechaFinRecurrencia != null &&
+            fechaFinRecurrencia.isBefore(fechaRecordatorio)) {
+          _mostrarMensaje('La repetición terminaría antes del primer aviso.');
+          return;
+        }
+        // Para intervalos automáticos, la primera ocurrencia visible debe
+        // coincidir con el primer aviso, no con el instante del dictado.
+        final horaExplicita = RegExp(
+          r'\b(?:a\s+las?|las?)\s+(?:\d{1,2}|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)\b',
+          caseSensitive: false,
+        ).hasMatch(recurrencia['textoSinRecurrencia'] as String? ?? dictado);
+        if (!horaExplicita && horaSeleccionada == null &&
+            tipoRecurrencia != 'dias_semana' &&
+            !RegExp(r'\b(?:mañana|hoy|pasado mañana|\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre))\b', caseSensitive: false)
+                .hasMatch(recurrencia['textoSinRecurrencia'] as String? ?? '')) {
+          fechaEvento = fechaRecordatorio;
+        }
+        fechaProximaRepeticion = fechaRecordatorio;
+      }
     }
 
     // No se crean avisos con fecha pasada.
@@ -717,6 +937,12 @@ class LifeFlowController extends ChangeNotifier {
           ? diasAnticipacion
           : null,
       avisoRelativo: avisoRelativo,
+      esRecurrente: esRecurrente,
+      tipoRecurrencia: tipoRecurrencia,
+      intervaloRecurrencia: intervaloRecurrencia,
+      fechaFinRecurrencia: fechaFinRecurrencia,
+      fechaProximaRepeticion: fechaProximaRepeticion,
+      diasSemanaRecurrencia: diasSemanaRecurrencia,
     );
 
     if (!mounted) return;
@@ -736,7 +962,7 @@ class LifeFlowController extends ChangeNotifier {
     // Se guarda en la memoria y se programa la notificación de Android.
     await _guardarDatos();
     try {
-      await _recordatorios.programarNotificacion(nuevo);
+      await _programarNotificacionesInterno(nuevo);
       debugPrint('NOTIFICACION: programada correctamente');
     } catch (e, stackTrace) {
       debugPrint('ERROR AL PROGRAMAR NOTIFICACION: $e');
@@ -754,6 +980,71 @@ class LifeFlowController extends ChangeNotifier {
           ? 'Recordatorio guardado'
           : 'Nota guardada',
     );
+  }
+
+  /// Guarda los cambios realizados desde el botón Editar de una tarjeta.
+  Future<void> editarElemento(
+    ElementoFlow item, {
+    required String texto,
+    DateTime? fechaEvento,
+    DateTime? fechaRecordatorio,
+  }) async {
+    if (!mounted || _cargando) return;
+    final nombre = texto.trim();
+    if (nombre.isEmpty) {
+      _mostrarMensaje('El texto no puede estar vacío.');
+      return;
+    }
+
+    final indice = _elementos.indexWhere((e) => e.id == item.id);
+    if (indice < 0) {
+      _mostrarMensaje('No se encontró el elemento.');
+      return;
+    }
+    final anterior = _elementos[indice];
+    final esRecordatorio = anterior.tipo == 'Recordatorio';
+    final evento = fechaEvento ?? anterior.fechaEvento;
+    final aviso = fechaRecordatorio ?? anterior.fechaRecordatorio;
+
+    if (esRecordatorio && evento != null && aviso != null && aviso.isAfter(evento)) {
+      _mostrarMensaje('El aviso no puede ser posterior al evento.');
+      return;
+    }
+    if (esRecordatorio && aviso != null && !aviso.isAfter(DateTime.now())) {
+      _mostrarMensaje('El aviso debe estar en el futuro.');
+      return;
+    }
+
+    // Si se modificó la fecha o la hora del aviso, deja de ser relativo.
+    final cambioAviso = aviso != anterior.fechaRecordatorio;
+    final relativo = esRecordatorio && anterior.avisoRelativo && !cambioAviso;
+    final actualizado = anterior.copyWith(
+      texto: nombre,
+      fechaEvento: evento,
+      fechaRecordatorio: aviso,
+      avisoRelativo: relativo,
+      diasAnticipacion: relativo ? anterior.diasAnticipacion : null,
+    );
+
+    _actualizar(() {
+      _elementos[indice] = actualizado;
+      if (esRecordatorio) _ultimoRecordatorioId = actualizado.id;
+    });
+    await _guardarDatos();
+    if (!mounted) return;
+
+    if (esRecordatorio) {
+      _recordatorios.cancelarTemporizador(actualizado.id);
+      try {
+        await _programarNotificacionesInterno(actualizado);
+      } catch (e) {
+        debugPrint('Error actualizando notificación: $e');
+        _mostrarMensaje('Se guardó el cambio, pero no se pudo actualizar la notificación.');
+      }
+      if (!mounted) return;
+      _programarTimerInterno(actualizado);
+    }
+    _mostrarMensaje(esRecordatorio ? 'Recordatorio actualizado.' : 'Nota actualizada.');
   }
 
   /// Borra una nota o un recordatorio. Primero cancela su aviso; si eso falla, no lo borra.

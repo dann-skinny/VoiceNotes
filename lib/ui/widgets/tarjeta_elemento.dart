@@ -1,24 +1,18 @@
+
 import 'package:flutter/material.dart';
 
 import '../../models/elemento_flow.dart';
 import '../themes/colores_perfil.dart';
 
-/// Tarjeta que dibuja una nota o un recordatorio en la lista: el texto, sus fechas (si es
-/// recordatorio) y los botones para escucharlo o eliminarlo.
+/// Tarjeta que muestra una nota o recordatorio.
+/// Permite escucharlo, editarlo por voz o eliminarlo.
 class TarjetaElemento extends StatelessWidget {
-  /// La nota o el recordatorio que se muestra.
   final ElementoFlow item;
-
-  /// Factor de tamaño de letras e íconos (más grande en modo asistido).
   final double escala;
-
-  /// Colores del perfil activo.
   final ColoresPerfil colores;
 
-  /// Se llama al tocar el botón de escuchar (lee el texto en voz alta).
   final VoidCallback alEscuchar;
-
-  /// Se llama al tocar el botón de eliminar.
+  final VoidCallback alEditar;
   final VoidCallback alEliminar;
 
   const TarjetaElemento({
@@ -27,13 +21,14 @@ class TarjetaElemento extends StatelessWidget {
     required this.escala,
     required this.colores,
     required this.alEscuchar,
+    required this.alEditar,
     required this.alEliminar,
   });
 
   @override
   Widget build(BuildContext context) {
-    // Los recordatorios muestran información extra (fechas y anticipación).
     final recordatorio = item.tipo == 'Recordatorio';
+    final asistido = colores.esAdultoMayor;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -52,7 +47,6 @@ class TarjetaElemento extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Encabezado: ícono del tipo, texto y etiqueta "Nota" o "Recordatorio".
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -70,9 +64,7 @@ class TarjetaElemento extends StatelessWidget {
                   size: 23 * escala,
                 ),
               ),
-
               const SizedBox(width: 12),
-
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -81,19 +73,17 @@ class TarjetaElemento extends StatelessWidget {
                       item.texto,
                       softWrap: true,
                       style: TextStyle(
-                        fontSize: 14 * escala,
+                        fontSize: asistido ? 22 : 14 * escala,
                         fontWeight: FontWeight.w700,
                         color: colores.texto,
                         height: 1.4,
                       ),
                     ),
-
                     const SizedBox(height: 5),
-
                     Text(
                       recordatorio ? 'Recordatorio' : 'Nota',
                       style: TextStyle(
-                        fontSize: 11 * escala,
+                        fontSize: asistido ? 17 : 11 * escala,
                         color: Colors.grey.shade600,
                       ),
                     ),
@@ -103,8 +93,6 @@ class TarjetaElemento extends StatelessWidget {
             ],
           ),
 
-          // Información exclusiva de recordatorios: solo se muestra si hay alguna fecha que
-          // enseñar.
           if (recordatorio &&
               (item.fechaEvento != null ||
                   item.fechaRecordatorio != null ||
@@ -116,109 +104,90 @@ class TarjetaElemento extends StatelessWidget {
             ),
             const SizedBox(height: 10),
 
-            // Fecha del evento.
             if (item.fechaEvento != null)
               _detalleFechaElemento(
                 icono: Icons.event_outlined,
                 titulo: 'Fecha del evento',
                 valor: _formatearFecha(item.fechaEvento!),
-                escala: escala,
                 color: colores.principal,
+                escala: escala,
+                asistido: asistido,
               ),
 
             if (item.fechaEvento != null &&
                 item.fechaRecordatorio != null)
               const SizedBox(height: 12),
 
-            // Fecha y hora en que sonará el aviso.
             if (item.fechaRecordatorio != null)
               _detalleFechaElemento(
                 icono: Icons.notifications_active_outlined,
                 titulo: 'Fecha y hora del aviso',
-                valor: _formatearFecha(
-                  item.fechaRecordatorio!,
-                ),
-                escala: escala,
+                valor: _formatearFecha(item.fechaRecordatorio!),
                 color: colores.principal,
+                escala: escala,
+                asistido: asistido,
               ),
 
-            // Etiqueta que indica con cuántos días de anticipación se programó el aviso.
             if (item.avisoRelativo &&
                 item.diasAnticipacion != null) ...[
               const SizedBox(height: 12),
-
               Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 12,
-                  vertical: 7,
+                  vertical: 9,
                 ),
                 decoration: BoxDecoration(
                   color: colores.principal.withValues(alpha: 0.10),
                   borderRadius: BorderRadius.circular(20),
                 ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.schedule_rounded,
-                      color: colores.principal,
-                      size: 15 * escala,
-                    ),
-                    const SizedBox(width: 6),
-                    Flexible(
-                      child: Text(
-                        item.diasAnticipacion == 1
-                            ? 'Aviso programado 1 día antes'
-                            : 'Aviso programado ${item.diasAnticipacion} días antes',
-                        style: TextStyle(
-                          fontSize: 10 * escala,
-                          fontWeight: FontWeight.w600,
-                          color: colores.principal,
-                        ),
-                      ),
-                    ),
-                  ],
+                child: Text(
+                  item.diasAnticipacion == 1
+                      ? 'Aviso programado 1 día antes'
+                      : 'Aviso programado ${item.diasAnticipacion} días antes',
+                  style: TextStyle(
+                    fontSize: asistido ? 16 : 10 * escala,
+                    fontWeight: FontWeight.w600,
+                    color: colores.principal,
+                  ),
                 ),
               ),
             ],
           ],
 
           const SizedBox(height: 14),
-
           Divider(
             color: Colors.black.withValues(alpha: 0.06),
           ),
+          const SizedBox(height: 8),
 
-          const SizedBox(height: 6),
-
-          // Botones: escuchar el texto en voz alta y eliminar.
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
+          Wrap(
+            alignment: WrapAlignment.end,
+            spacing: 8,
+            runSpacing: 8,
             children: [
-              IconButton(
-                tooltip: 'Escuchar',
+              _botonAccion(
+                icono: Icons.volume_up_outlined,
+                etiqueta: 'Escuchar',
+                color: colores.principal,
+                fondo: colores.fondo,
+                asistido: asistido,
                 onPressed: alEscuchar,
-                style: IconButton.styleFrom(
-                  backgroundColor: colores.fondo,
-                  foregroundColor: colores.principal,
-                ),
-                icon: const Icon(
-                  Icons.volume_up_outlined,
-                ),
               ),
-
-              const SizedBox(width: 8),
-
-              IconButton(
-                tooltip: 'Eliminar',
+              _botonAccion(
+                icono: Icons.edit_outlined,
+                etiqueta: 'Editar',
+                color: colores.principal,
+                fondo: colores.principal.withValues(alpha: 0.10),
+                asistido: asistido,
+                onPressed: alEditar,
+              ),
+              _botonAccion(
+                icono: Icons.delete_outline_rounded,
+                etiqueta: 'Eliminar',
+                color: const Color(0xFFE05260),
+                fondo: const Color(0xFFFFF1F2),
+                asistido: asistido,
                 onPressed: alEliminar,
-                style: IconButton.styleFrom(
-                  backgroundColor: const Color(0xFFFFF1F2),
-                  foregroundColor: const Color(0xFFE05260),
-                ),
-                icon: const Icon(
-                  Icons.delete_outline_rounded,
-                ),
               ),
             ],
           ),
@@ -227,7 +196,39 @@ class TarjetaElemento extends StatelessWidget {
     );
   }
 
-  /// Da formato amigable a una fecha: "Hoy · 09:30", "Mañana · 18:00" o "15/3/2027 · 08:00".
+  Widget _botonAccion({
+    required IconData icono,
+    required String etiqueta,
+    required Color color,
+    required Color fondo,
+    required bool asistido,
+    required VoidCallback onPressed,
+  }) {
+    return TextButton.icon(
+      onPressed: onPressed,
+      style: TextButton.styleFrom(
+        backgroundColor: fondo,
+        foregroundColor: color,
+        minimumSize: Size(0, asistido ? 56 : 44),
+        padding: EdgeInsets.symmetric(
+          horizontal: asistido ? 14 : 10,
+          vertical: 10,
+        ),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+      ),
+      icon: Icon(icono, size: asistido ? 25 : 20),
+      label: Text(
+        etiqueta,
+        style: TextStyle(
+          fontSize: asistido ? 17 : 13,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+
   String _formatearFecha(DateTime fecha) {
     final ahora = DateTime.now();
     final hoy = DateTime(ahora.year, ahora.month, ahora.day);
@@ -235,7 +236,6 @@ class TarjetaElemento extends StatelessWidget {
 
     String etiqueta;
 
-    // Hoy y mañana se muestran con palabras; los demás días, con la fecha completa.
     if (dia == hoy) {
       etiqueta = 'Hoy';
     } else if (dia == hoy.add(const Duration(days: 1))) {
@@ -250,26 +250,23 @@ class TarjetaElemento extends StatelessWidget {
     return '$etiqueta · $hora:$minuto';
   }
 
-  /// Una línea de detalle con ícono, un título pequeño y un valor (por ejemplo, "Fecha del
-  /// evento" y su fecha).
   Widget _detalleFechaElemento({
     required IconData icono,
     required String titulo,
     required String valor,
     required double escala,
     required Color color,
+    required bool asistido,
   }) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Icon(
           icono,
-          size: 16 * escala,
+          size: asistido ? 24 : 16 * escala,
           color: color,
         ),
-
         const SizedBox(width: 8),
-
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -277,20 +274,18 @@ class TarjetaElemento extends StatelessWidget {
               Text(
                 titulo,
                 style: TextStyle(
-                  fontSize: 10 * escala,
+                  fontSize: asistido ? 16 : 10 * escala,
                   color: Colors.grey.shade600,
                 ),
               ),
-
               const SizedBox(height: 2),
-
               Text(
                 valor,
                 softWrap: true,
                 style: TextStyle(
-                  fontSize: 12 * escala,
+                  fontSize: asistido ? 19 : 12 * escala,
                   color: color,
-                  fontWeight: FontWeight.w500,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
             ],
